@@ -16,7 +16,7 @@ billing-map-reduce/
     │   ├── billing_util.js        # Overage math & consolidated Invoice builder
     │   └── map_reduce_util.js     # Reusable Map/Reduce summary parser & admin email alerts
     └── overage-billing/
-        └── calc_all_overages.js   # Calculates all overage bills, has the option to target specific customers using 
+        └── calc_all_overages.js   # Calculates all overage bills, has the option to target specific customers using the `custscript_target_customer` parameter
 ```
 
 ---
