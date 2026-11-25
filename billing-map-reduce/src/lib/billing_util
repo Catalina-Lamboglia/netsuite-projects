@@ -1,0 +1,77 @@
+/**
+ * @NApiVersion 2.1
+ * @NModuleScope SameAccount
+ * @description Agnostic billing utility for overage calculations and consolidated Invoice generation.
+ */
+
+define(['N/record'], (record) => {
+
+    /**
+     * Calculates overage quantity and total amount safely to 2 decimal places.
+     * @param {number} metered - Actual usage recorded
+     * @param {number} contracted - Allowed threshold under contract
+     * @param {number} rate - Unit rate for excess usage
+     * @returns {Object} { overageQty, overageAmount, isBillable }
+     */
+    const calculateOverage = (metered, contracted, rate) => {
+        const cleanMetered = parseFloat(metered) || 0;
+        const cleanContracted = parseFloat(contracted) || 0;
+        const cleanRate = parseFloat(rate) || 0;
+
+        const overageQty = Number((cleanMetered - cleanContracted).toFixed(2));
+        const overageAmount = Number((overageQty * cleanRate).toFixed(2));
+
+        return {
+            overageQty,
+            overageAmount,
+            isBillable: overageQty > 0 && overageAmount > 0
+        };
+    };
+
+    /**
+     * Generates a consolidated Invoice in Dynamic Mode from an array of generic line items.
+     * @param {Object} params
+     * @param {string|number} params.customerId - NetSuite Customer Internal ID
+     * @param {string} params.memo - Invoice header memo
+     * @param {Array<Object>} params.lines - Array of { itemId, quantity, rate, description }
+     * @returns {number} Newly created Invoice Internal ID
+     */
+    const createConsolidatedInvoice = ({ customerId, memo, lines }) => {
+        if (!lines || lines.length === 0) {
+            throw new Error(`Cannot create invoice for Customer ${customerId}: No billable lines provided.`);
+        }
+
+        const invoiceRec = record.create({
+            type: record.Type.INVOICE,
+            isDynamic: true
+        });
+
+        invoiceRec.setValue({ fieldId: 'entity', value: customerId });
+        if (memo) {
+            invoiceRec.setValue({ fieldId: 'memo', value: memo });
+        }
+
+        lines.forEach((line) => {
+            invoiceRec.selectNewLine({ sublistId: 'item' });
+            invoiceRec.setCurrentSublistValue({ sublistId: 'item', fieldId: 'item', value: line.itemId });
+            invoiceRec.setCurrentSublistValue({ sublistId: 'item', fieldId: 'quantity', value: line.quantity });
+            invoiceRec.setCurrentSublistValue({ sublistId: 'item', fieldId: 'rate', value: line.rate });
+
+            if (line.description) {
+                invoiceRec.setCurrentSublistValue({ sublistId: 'item', fieldId: 'description', value: line.description });
+            }
+
+            invoiceRec.commitLine({ sublistId: 'item' });
+        });
+
+        return invoiceRec.save({
+            enableSourcing: true,
+            ignoreMandatoryFields: false
+        });
+    };
+
+    return {
+        calculateOverage,
+        createConsolidatedInvoice
+    };
+});

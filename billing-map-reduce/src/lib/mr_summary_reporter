@@ -1,0 +1,60 @@
+/**
+ * @NApiVersion 2.1
+ * @NModuleScope SameAccount
+ * @description Post-execution reporter for Map/Reduce scripts. Aggregates stage errors and dispatches admin alerts.
+ */
+
+define(['N/email'], (email) => {
+
+    /**
+     * Parses a Map/Reduce summary object, logs metrics, and emails admins if errors occurred.
+     * @param {Object} params
+     * @param {Object} params.summary - NetSuite Map/Reduce summary context
+     * @param {string} params.scriptName - Human-readable name for logging/email subject
+     * @param {number} [params.authorId] - Employee ID sending alert email
+     * @param {string} [params.recipientEmail] - Admin/Ops email address
+     */
+    const processSummaryAndAlert = ({ summary, scriptName, authorId, recipientEmail }) => {
+        let outputCount = 0;
+        const errors = [];
+
+        summary.output.iterator().each(() => {
+            outputCount++;
+            return true;
+        });
+
+        if (summary.inputSummary.error) {
+            errors.push(`Input Stage Error: ${summary.inputSummary.error}`);
+        }
+
+        summary.mapSummary.errors.iterator().each((key, error) => {
+            errors.push(`Map Error [Key: ${key}]: ${error}`);
+            return true;
+        });
+
+        summary.reduceSummary.errors.iterator().each((key, error) => {
+            errors.push(`Reduce Error [Key: ${key}]: ${error}`);
+            return true;
+        });
+
+        log.audit(`${scriptName} - Execution Summary`, {
+            durationSeconds: summary.seconds,
+            governanceUnitsUsed: summary.usage,
+            recordsOutput: outputCount,
+            errorCount: errors.length
+        });
+
+        if (errors.length > 0 && authorId && recipientEmail) {
+            email.send({
+                author: authorId,
+                recipients: recipientEmail,
+                subject: `[NetSuite Exception] ${scriptName} failed on ${errors.length} record(s)`,
+                body: `Execution encountered the following errors:\n\n${errors.join('\n')}`
+            });
+        }
+    };
+
+    return {
+        processSummaryAndAlert
+    };
+});

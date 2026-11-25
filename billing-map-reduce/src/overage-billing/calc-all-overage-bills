@@ -1,0 +1,127 @@
+/**
+ * @NApiVersion 2.1
+ * @NScriptType MapReduceScript
+ * @NModuleScope SameAccount
+ * @description Orchestrates monthly metered usage overage billing.
+ */
+
+define([
+    'N/search',
+    'N/record',
+    'N/runtime',
+    '../lib/billing_util',
+    '../lib/mr_summary_reporter'
+], (search, record, runtime, billingUtils, mrReporter) => {
+
+    const TELEMETRY_REC = {
+        TYPE: 'customrecord_usage_telemetry',
+        CUSTOMER: 'custrecord_ut_customer',
+        LOCATION: 'custrecord_ut_location',
+        ASSET_ID: 'custrecord_ut_asset_id',
+        CONTRACTED_QTY: 'custrecord_ut_contracted_qty',
+        METERED_QTY: 'custrecord_ut_metered_qty',
+        OVERAGE_RATE: 'custrecord_ut_overage_rate',
+        BILLING_PERIOD: 'custrecord_ut_billing_period',
+        PROCESSED: 'custrecord_ut_processed',
+        INVOICE_LINK: 'custrecord_ut_invoice_ref'
+    };
+
+    const getInputData = () => {
+        const targetCustomerId = runtime.getCurrentScript().getParameter({ name: 'custscript_target_customer' });
+
+        const filters = [
+            [TELEMETRY_REC.PROCESSED, 'is', 'F'],
+            'AND',
+            [`formulanumeric: {${TELEMETRY_REC.METERED_QTY}} - {${TELEMETRY_REC.CONTRACTED_QTY}}`, 'greaterthan', 0]
+        ];
+
+        // Optional single-customer filter for targeted runs/testing. Remove this block (or leave parameter blank) to process all customers.
+        if (targetCustomerId) {
+            filters.push('AND', [TELEMETRY_REC.CUSTOMER, 'anyof', targetCustomerId]);
+        }
+
+        return search.create({
+            type: TELEMETRY_REC.TYPE,
+            filters,
+            columns: Object.values(TELEMETRY_REC).filter(val => val !== TELEMETRY_REC.TYPE)
+        });
+    };
+
+    const map = (context) => {
+        if (!context.value) return;
+
+        const result = JSON.parse(context.value);
+        const vals = result.values;
+
+        // Delegate math to shared billing library
+        const calc = billingUtils.calculateOverage(
+            vals[TELEMETRY_REC.METERED_QTY],
+            vals[TELEMETRY_REC.CONTRACTED_QTY],
+            vals[TELEMETRY_REC.OVERAGE_RATE]
+        );
+
+        if (!calc.isBillable) return;
+
+        context.write({
+            key: vals[TELEMETRY_REC.CUSTOMER].value,
+            value: {
+                telemetryId: result.id,
+                billingPeriod: vals[TELEMETRY_REC.BILLING_PERIOD],
+                overageQty: calc.overageQty,
+                overageRate: parseFloat(vals[TELEMETRY_REC.OVERAGE_RATE]),
+                description: `Usage Overage (${vals[TELEMETRY_REC.BILLING_PERIOD]}) | Location: ${vals[TELEMETRY_REC.LOCATION]?.text} | Asset: ${vals[TELEMETRY_REC.ASSET_ID]}`
+            }
+        });
+    };
+
+    const reduce = (context) => {
+        if (!context.values || context.values.length === 0) return;
+
+        const customerId = context.key;
+        const records = context.values.map(v => JSON.parse(v));
+        const overageItemId = runtime.getCurrentScript().getParameter({ name: 'custscript_overage_item_id' });
+        const billingPeriod = records.billingPeriod || 'Current Cycle';
+
+        // Format payload for the generic invoice builder
+        const invoiceLines = records.map(rec => ({
+            itemId: overageItemId,
+            quantity: rec.overageQty,
+            rate: rec.overageRate,
+            description: rec.description
+        }));
+
+        // Delegate invoice creation to shared library
+        const invoiceId = billingUtils.createConsolidatedInvoice({
+            customerId,
+            memo: `Automated Usage Overage Billing - ${billingPeriod}`,
+            lines: invoiceLines
+        });
+
+        // Stamp telemetry records as processed
+        records.forEach(rec => {
+            record.submitFields({
+                type: TELEMETRY_REC.TYPE,
+                id: rec.telemetryId,
+                values: {
+                    [TELEMETRY_REC.PROCESSED]: true,
+                    [TELEMETRY_REC.INVOICE_LINK]: invoiceId
+                }
+            });
+        });
+
+        context.write({ key: invoiceId, value: customerId });
+    };
+
+    const summarize = (summary) => {
+        const script = runtime.getCurrentScript();
+        // Delegate error parsing & alerting to shared Map/Reduce reporter
+        mrReporter.processSummaryAndAlert({
+            summary,
+            scriptName: 'Usage Overage Billing',
+            authorId: script.getParameter({ name: 'custscript_billing_email_author' }),
+            recipientEmail: script.getParameter({ name: 'custscript_billing_team_email' })
+        });
+    };
+
+    return { getInputData, map, reduce, summarize };
+});
