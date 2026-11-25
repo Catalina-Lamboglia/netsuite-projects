@@ -1,0 +1,13 @@
+{
+  "name": "netsuite-suitescript-portfolio",
+  "version": "1.0.0",
+  "description": "Modular SuiteScript 2.1 implementations for batch billing, order provisioning, and RESTlet integrations.",
+  "private": true,
+  "scripts": {
+    "test": "jest",
+    "test:watch": "jest --watch"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  }
+}
